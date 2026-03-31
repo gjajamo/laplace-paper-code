@@ -7,6 +7,7 @@ from pathlib import Path
 
 import matplotlib
 matplotlib.use("Agg")
+from scipy.optimize import OptimizeResult
 
 
 def display(obj):
@@ -28,6 +29,12 @@ def _configure_output_dir() -> tuple[Path, Path]:
         default=".",
         help="Directory where figures and tables will be written.",
     )
+    parser.add_argument(
+        "--max-method-hours",
+        type=float,
+        default=None,
+        help="Optional wall-time limit per method. If reached, the script returns the best point seen so far for that method.",
+    )
     args = parser.parse_args()
     script_dir = Path(__file__).resolve().parent
     bundled_data = script_dir / "data" / "warfarin_dat.csv"
@@ -37,10 +44,18 @@ def _configure_output_dir() -> tuple[Path, Path]:
         shutil.copy2(bundled_data, output_dir / "warfarin_dat.csv")
     os.chdir(output_dir)
     print(f"Output directory: {output_dir}")
+    global MAX_METHOD_RUNTIME_SEC
+    MAX_METHOD_RUNTIME_SEC = None if args.max_method_hours is None else max(float(args.max_method_hours), 0.0) * 3600.0
+    if MAX_METHOD_RUNTIME_SEC is not None:
+        print(f"Per-method wall-time limit: {args.max_method_hours:.3f} hours")
     return output_dir, bundled_data
 
 
 OUTPUT_DIR, BUNDLED_DATA = _configure_output_dir()
+
+
+class MethodTimeLimitReached(RuntimeError):
+    pass
 # %% [markdown] cell 1
 # # Single-start FOCEI comparison for the public Warfarin PK/PD example
 # 
@@ -75,13 +90,10 @@ import matplotlib.pyplot as plt
 
 # ---------- Internal Bools ----------
 boolReadResults = False # if you want to read results from disk instead of re-running the optimization (which takes a few hours)
-#METHODS_TO_READ = ["STOP", "FULL_UNROLL", "FULL_IMPLICIT", "FD", "STOP+FULL"]  # which methods to read results for (if boolReadResults is True)
 METHODS_TO_READ = ["FULL_UNROLL", "FULL_IMPLICIT", "STOP", "STOP+FULL", "FULL+STOP","FD"]
 boolWriteResults = True
 
 # Which methods to run (if boolReadResults is False)
-# METHODS = ["FULL_IMPLICIT", "FULL_UNROLL", "STOP", "STOP+FULL", "FULL+STOP","FD"]
-# METHODS = ["FULL+STOP"]
 METHODS = ["FULL_UNROLL", "FULL_IMPLICIT", "STOP", "STOP+FULL", "FULL+STOP", "FD"]
 
 
@@ -90,7 +102,6 @@ DO_OBJECTIVE_SLICE = False # do the objective slice for the STOP method (takes a
 DO_OBJECTIVE_SLICE_PLOT = True
 
 
-#RUN_SINGLE = True
 # multistart
 RUN_MULTISTART = False
 RUN_MULTISTART_PLOT = False
@@ -1804,6 +1815,8 @@ def run_optimization_notebook(
     gtol: float = 1e-4,
     ftol: float = 1e-8,
     maxls: int = 10,
+    max_runtime_sec: Optional[float] = None,
+    deadline_perf_counter: Optional[float] = None,
 ):
     """
     Returns (scipy_result, out_dict) where out_dict contains trace, runtime, etc.
@@ -1813,6 +1826,8 @@ def run_optimization_notebook(
     trace_f = []
     trace_gnorm = []
     t_start = time.perf_counter()
+    if deadline_perf_counter is None and max_runtime_sec is not None:
+        deadline_perf_counter = t_start + float(max_runtime_sec)
 
     # Stable warm-start cache: only updated at accepted iterates via callback
     eta_cache_accepted: Dict[int, torch.Tensor] = {}
@@ -1839,6 +1854,15 @@ def run_optimization_notebook(
         g = (2.0 * PEN_QUAD) * dz
         return f, g
 
+    def _check_time_limit(where: str = "") -> None:
+        if deadline_perf_counter is None:
+            return
+        if time.perf_counter() >= deadline_perf_counter:
+            where_txt = f" during {where}" if where else ""
+            raise MethodTimeLimitReached(
+                f"Stopped after reaching the {max_runtime_sec / 3600.0:.3f}-hour wall-time limit{where_txt}."
+            )
+
     # -----------------------
     # STOP + FULL_UNROLL: AD outer gradient, stable cache
     # -----------------------
@@ -1848,6 +1872,7 @@ def run_optimization_notebook(
             nonlocal last_eval_cache, last_eval_x, last_finite_x, last_finite_f
             nonlocal last_eval_f, last_eval_gnorm, best_f, best_x
 
+            _check_time_limit(f"{method} objective evaluation")
             z = np.array(z, dtype=float)
             #if bounds is not None:
             #    lo = np.array([b[0] for b in bounds], dtype=float)
@@ -1929,22 +1954,16 @@ def run_optimization_notebook(
 
             trace_f.append(float(f))
             trace_gnorm.append(gnorm)
+            _check_time_limit(f"{method} objective evaluation")
             return float(f), g.astype(float)
 
-
-        #def callback(xk: np.ndarray):
-        #    nonlocal eta_cache_accepted, last_eval_cache, last_eval_x
-        #    # Accept last evaluation cache at the accepted iterate (only if it matches xk)
-        #    if (last_eval_cache is not None) and (last_eval_x is not None):
-        #        xk = np.array(xk, dtype=float)
-        #        if np.allclose(xk, last_eval_x, atol=1e-12, rtol=0.0):
-        #            eta_cache_accepted = last_eval_cache
 
         def callback(xk: np.ndarray):
             nonlocal eta_cache_accepted, last_eval_cache, last_eval_x
             nonlocal last_eval_f, last_eval_gnorm, best_f, best_x
             #nonlocal accepted_iter
 
+            _check_time_limit(f"{method} callback")
             if (last_eval_cache is not None) and (last_eval_x is not None):
                 xk = np.array(xk, dtype=float)
 
@@ -1963,19 +1982,33 @@ def run_optimization_notebook(
 
 
         
-        res = minimize(
-            fun=eval_f_g,
-            x0=x0,
-            jac=True,
-            method="L-BFGS-B",
-            bounds=bounds,
-            callback=callback,
-            options={"maxiter": int(max_outer_iter),
-                     "ftol": ftol,  # disable f-based stopping (we have a custom penalty handling)
-                     "gtol": gtol, 
-                     "maxls": maxls, # Maximum number of line search steps per iteration. The default is 20. 
-                     },
-        )
+        try:
+            res = minimize(
+                fun=eval_f_g,
+                x0=x0,
+                jac=True,
+                method="L-BFGS-B",
+                bounds=bounds,
+                callback=callback,
+                options={"maxiter": int(max_outer_iter),
+                         "ftol": ftol,  # disable f-based stopping (we have a custom penalty handling)
+                         "gtol": gtol, 
+                         "maxls": maxls, # Maximum number of line search steps per iteration. The default is 20. 
+                         },
+            )
+        except MethodTimeLimitReached as exc:
+            x_timeout = best_x.copy() if best_x is not None else last_finite_x.copy()
+            fun_timeout = best_f if np.isfinite(best_f) else float(last_finite_f)
+            res = OptimizeResult(
+                x=x_timeout,
+                fun=fun_timeout,
+                success=False,
+                status=1,
+                message=str(exc),
+                nit=len(trace_f),
+                nfev=len(trace_f),
+                timed_out=True,
+            )
         x_hat = res.x.copy()
         final_L = float(res.fun)
 
@@ -2016,16 +2049,6 @@ def run_optimization_notebook(
                 print(r)
 
 
-        # build a fresh cache at x0 first
-        #tmp_cache = {}
-        #_ = focei_objective_stop(subjects, torch.tensor(x0, dtype=torch.float64), eta_cache=tmp_cache, inner_damping=inner_damping)
-        #check_inner_eta_quality(subjects, x0, tmp_cache, inner_damping=inner_damping)
-
-        # and similarly for x_hat
-        #tmp_cache = {}
-        #_ = focei_objective_stop(subjects, torch.tensor(x_hat, dtype=torch.float64), eta_cache=tmp_cache, inner_damping=inner_damping)
-        #check_inner_eta_quality(subjects, x_hat, tmp_cache, inner_damping=inner_damping)
-
     # -----------------------
     # FULL_IMPLICIT: implicit differentiation outer gradient, stable cache
     # -----------------------
@@ -2035,6 +2058,7 @@ def run_optimization_notebook(
             nonlocal last_eval_cache, last_eval_x, last_finite_x, last_finite_f
             nonlocal last_eval_f, last_eval_gnorm, best_f, best_x
 
+            _check_time_limit(f"{method} objective evaluation")
             z = np.array(z, dtype=float)
             #if bounds is not None:
             #    lo = np.array([b[0] for b in bounds], dtype=float)
@@ -2095,22 +2119,16 @@ def run_optimization_notebook(
 
             trace_f.append(float(f))
             trace_gnorm.append(gnorm)
+            _check_time_limit(f"{method} objective evaluation")
             return float(f), g.astype(float)
 
-
-        #def callback(xk: np.ndarray):
-        #    nonlocal eta_cache_accepted, last_eval_cache, last_eval_x
-        #    if (last_eval_cache is not None) and (last_eval_x is not None):
-        #        xk = np.array(xk, dtype=float)
-        #        # Only accept the cache if it corresponds to the accepted iterate xk
-        #        if np.allclose(xk, last_eval_x, atol=1e-12, rtol=0.0):
-        #            eta_cache_accepted = last_eval_cache
 
         def callback(xk: np.ndarray):
             nonlocal eta_cache_accepted, last_eval_cache, last_eval_x
             nonlocal last_eval_f, last_eval_gnorm, best_f, best_x
             #nonlocal accepted_iter
 
+            _check_time_limit(f"{method} callback")
             if (last_eval_cache is not None) and (last_eval_x is not None):
                 xk = np.array(xk, dtype=float)
 
@@ -2128,19 +2146,33 @@ def run_optimization_notebook(
                     print(f"[{method}] ACCEPT f={last_eval_f:.6f}  |g|={last_eval_gnorm:.3e}  best_f={best_f:.6f}")
 
 
-        res = minimize(
-            fun=eval_f_g,
-            x0=x0,
-            jac=True,
-            method="L-BFGS-B",
-            bounds=bounds,
-            callback=callback,
-            options={"maxiter": int(max_outer_iter),
-                     "ftol": ftol,  # disable f-based stopping (we have a custom penalty handling)
-                     "gtol": gtol, 
-                     "maxls": maxls, # Maximum number of line search steps per iteration. The default is 20. 
-                     },
-        )
+        try:
+            res = minimize(
+                fun=eval_f_g,
+                x0=x0,
+                jac=True,
+                method="L-BFGS-B",
+                bounds=bounds,
+                callback=callback,
+                options={"maxiter": int(max_outer_iter),
+                         "ftol": ftol,  # disable f-based stopping (we have a custom penalty handling)
+                         "gtol": gtol, 
+                         "maxls": maxls, # Maximum number of line search steps per iteration. The default is 20. 
+                         },
+            )
+        except MethodTimeLimitReached as exc:
+            x_timeout = best_x.copy() if best_x is not None else last_finite_x.copy()
+            fun_timeout = best_f if np.isfinite(best_f) else float(last_finite_f)
+            res = OptimizeResult(
+                x=x_timeout,
+                fun=fun_timeout,
+                success=False,
+                status=1,
+                message=str(exc),
+                nit=len(trace_f),
+                nfev=len(trace_f),
+                timed_out=True,
+            )
         x_hat = res.x.copy()
         final_L = float(res.fun)
 
@@ -2180,16 +2212,6 @@ def run_optimization_notebook(
                 print(r)
 
 
-        # build a fresh cache at x0 first
-        #tmp_cache = {}
-        #_ = focei_objective_stop(subjects, torch.tensor(x0, dtype=torch.float64), eta_cache=tmp_cache, inner_damping=inner_damping)
-        #check_inner_eta_quality(subjects, x0, tmp_cache, inner_damping=inner_damping)
-
-        # and similarly for x_hat
-        #tmp_cache = {}
-        #_ = focei_objective_stop(subjects, torch.tensor(x_hat, dtype=torch.float64), eta_cache=tmp_cache, inner_damping=inner_damping)
-        #check_inner_eta_quality(subjects, x_hat, tmp_cache, inner_damping=inner_damping)
-
     # -----------------------
     # MIXED: STOP warm-start -> FULL_IMPLICIT polish
     # -----------------------
@@ -2226,6 +2248,8 @@ def run_optimization_notebook(
             gtol=float(gtol_STOP),
             ftol=float(ftol_STOP),
             maxls=int(5),
+            max_runtime_sec=max_runtime_sec,
+            deadline_perf_counter=deadline_perf_counter,
 
             # pass initial cache (if any), and request cache back
             #eta_cache_init=eta_cache_init,
@@ -2237,6 +2261,14 @@ def run_optimization_notebook(
 
         if verbose:
             print(f"[STOP+FULL] Stage 1 done: STOP final_f={out_stop['final_f']:.6f}, niter={out_stop['niter']}, nfev={out_stop['nfev']}")
+
+        if out_stop.get("timed_out", False):
+            out_mixed = dict(out_stop)
+            out_mixed["method"] = "STOP+FULL"
+            out_mixed["success"] = False
+            out_mixed["message"] = f"STOP warm start timed out: {out_stop.get('message', '')}"
+            out_mixed["timed_out"] = True
+            return res_stop, out_mixed
 
         # ---- Stage 2: FULL_IMPLICIT ----
         res_full, out_full = run_optimization_notebook(
@@ -2264,6 +2296,8 @@ def run_optimization_notebook(
             gtol=float(gtol),
             ftol=float(ftol),
             maxls=int(maxls),
+            max_runtime_sec=max_runtime_sec,
+            deadline_perf_counter=deadline_perf_counter,
 
             # warm-start FULL_IMPLICIT from STOP cache
             #eta_cache_init=cache1,
@@ -2282,6 +2316,7 @@ def run_optimization_notebook(
             "runtime_sec": float(out_stop.get("runtime_sec", 0.0)) + float(out_full.get("runtime_sec", 0.0)),
             "trace_f": list(out_stop.get("trace_f", [])) + list(out_full.get("trace_f", [])),
             "trace_gnorm": list(out_stop.get("trace_gnorm", [])) + list(out_full.get("trace_gnorm", [])),
+            "timed_out": bool(out_stop.get("timed_out", False) or out_full.get("timed_out", False)),
 
             # useful audit fields
             "stop_stage_final_f": float(out_stop.get("final_f", np.nan)),
@@ -2347,6 +2382,8 @@ def run_optimization_notebook(
             gtol=float(gtol),
             ftol=float(ftol),
             maxls=int(maxls),
+            max_runtime_sec=max_runtime_sec,
+            deadline_perf_counter=deadline_perf_counter,
 
             # warm-start FULL_IMPLICIT from STOP cache
             #eta_cache_init=cache1,
@@ -2358,6 +2395,14 @@ def run_optimization_notebook(
 
         if verbose:
             print(f"[FULL+STOP] Stage 1 done: FULL final_f={out_full['final_f']:.6f}, niter={out_full['niter']}, nfev={out_full['nfev']}")
+
+        if out_full.get("timed_out", False):
+            out_mixed = dict(out_full)
+            out_mixed["method"] = "FULL+STOP"
+            out_mixed["success"] = False
+            out_mixed["message"] = f"FULL-implicit warm start timed out: {out_full.get('message', '')}"
+            out_mixed["timed_out"] = True
+            return res_full, out_mixed
 
         # ---- Stage 1: STOP ----
         res_stop, out_stop = run_optimization_notebook(
@@ -2385,6 +2430,8 @@ def run_optimization_notebook(
             gtol=float(gtol_STOP),
             ftol=float(ftol_STOP),
             maxls=int(maxls),
+            max_runtime_sec=max_runtime_sec,
+            deadline_perf_counter=deadline_perf_counter,
 
             # pass initial cache (if any), and request cache back
             #eta_cache_init=eta_cache_init,
@@ -2407,6 +2454,7 @@ def run_optimization_notebook(
             "runtime_sec": float(out_stop.get("runtime_sec", 0.0)) + float(out_full.get("runtime_sec", 0.0)),
             "trace_f": list(out_full.get("trace_f", [])) + list(out_stop.get("trace_f", [])),
             "trace_gnorm": list(out_full.get("trace_gnorm", [])) + list(out_stop.get("trace_gnorm", [])),
+            "timed_out": bool(out_stop.get("timed_out", False) or out_full.get("timed_out", False)),
 
             # useful audit fields
             "stop_stage_final_f": float(out_stop.get("final_f", np.nan)),
@@ -2454,6 +2502,7 @@ def run_optimization_notebook(
 
         def f_only(z: np.ndarray, *, warm_cache: Optional[Dict[int, torch.Tensor]] = None) -> Tuple[float, Dict[int, torch.Tensor]]:
             """Return (f, eta_cache_out). Does NOT modify eta_cache_accepted."""
+            _check_time_limit("FD base objective")
             z = np.array(z, dtype=float)
             eta_cache_local = (warm_cache.copy() if warm_cache is not None else eta_cache_accepted.copy())
             f = focei_objective_fd_value(
@@ -2468,12 +2517,14 @@ def run_optimization_notebook(
                 floor_abs=hess_floor_abs,
                 max_step_norm=max_step_norm,
             )
+            _check_time_limit("FD base objective")
             return float(f), eta_cache_local
 
         def eval_f_g(z: np.ndarray) -> Tuple[float, np.ndarray]:
             nonlocal last_eval_cache, last_eval_x, last_finite_x, last_finite_f
             nonlocal last_eval_f, last_eval_gnorm, best_f, best_x
 
+            _check_time_limit("FD objective evaluation")
             z = np.array(z, dtype=float)
             #if bounds is not None:
             #    lo = np.array([b[0] for b in bounds], dtype=float)
@@ -2509,6 +2560,7 @@ def run_optimization_notebook(
                 if verbose:
                     print(f"[FD] VISIT f0={f0:.6f}. Computing forward-diff gradient (p={p}) ...")
                 for j in range(p):
+                    _check_time_limit(f"FD forward gradient component {j+1}/{p}")
 
                     zp = z.copy()
                     zp[j] = z[j] + fd_eps_outer
@@ -2534,6 +2586,7 @@ def run_optimization_notebook(
                 if verbose:
                     print(f"[FD] VISIT f0={f0:.6f}. Computing central-diff gradient (2p evals, p={p}) ...")
                 for j in range(p):
+                    _check_time_limit(f"FD central gradient component {j+1}/{p}")
                     #ej = np.zeros(p); ej[j] = 1.0
                     #zp = z + fd_eps_outer * ej
                     #zm = z - fd_eps_outer * ej
@@ -2591,22 +2644,16 @@ def run_optimization_notebook(
 
             trace_f.append(float(f0))
             trace_gnorm.append(gnorm)
+            _check_time_limit("FD objective evaluation")
             return float(f0), g.astype(float)
 
-
-        #def callback(xk: np.ndarray):
-        #    nonlocal eta_cache_accepted, last_eval_cache, last_eval_x
-        #    if (last_eval_cache is not None) and (last_eval_x is not None):
-        #        xk = np.array(xk, dtype=float)
-        #        # Only accept the cache if it corresponds to the accepted iterate xk
-        #        if np.allclose(xk, last_eval_x, atol=1e-12, rtol=0.0):
-        #            eta_cache_accepted = last_eval_cache
 
         def callback(xk: np.ndarray):
             nonlocal eta_cache_accepted, last_eval_cache, last_eval_x
             nonlocal last_eval_f, last_eval_gnorm, best_f, best_x
             #nonlocal accepted_iter
 
+            _check_time_limit("FD callback")
             if (last_eval_cache is not None) and (last_eval_x is not None):
                 xk = np.array(xk, dtype=float)
 
@@ -2624,19 +2671,33 @@ def run_optimization_notebook(
                     print(f"[{method}] ACCEPT f={last_eval_f:.6f}  |g|={last_eval_gnorm:.3e}  best_f={best_f:.6f}")
 
 
-        res = minimize(
-            fun=eval_f_g,
-            x0=x0,
-            jac=True,
-            method="L-BFGS-B",
-            bounds=bounds,
-            callback=callback,
-            options={"maxiter": int(max_outer_iter),
-                     "ftol": ftol,  # disable f-based stopping (we have a custom penalty handling)
-                     "gtol": gtol, 
-                     "maxls": maxls, # Maximum number of line search steps per iteration. The default is 20. 
-                     },
-        )
+        try:
+            res = minimize(
+                fun=eval_f_g,
+                x0=x0,
+                jac=True,
+                method="L-BFGS-B",
+                bounds=bounds,
+                callback=callback,
+                options={"maxiter": int(max_outer_iter),
+                         "ftol": ftol,  # disable f-based stopping (we have a custom penalty handling)
+                         "gtol": gtol, 
+                         "maxls": maxls, # Maximum number of line search steps per iteration. The default is 20. 
+                         },
+            )
+        except MethodTimeLimitReached as exc:
+            x_timeout = best_x.copy() if best_x is not None else last_finite_x.copy()
+            fun_timeout = best_f if np.isfinite(best_f) else float(last_finite_f)
+            res = OptimizeResult(
+                x=x_timeout,
+                fun=fun_timeout,
+                success=False,
+                status=1,
+                message=str(exc),
+                nit=len(trace_f),
+                nfev=len(trace_f),
+                timed_out=True,
+            )
         x_hat = res.x.copy()
         final_L = float(res.fun)
 
@@ -2656,6 +2717,7 @@ def run_optimization_notebook(
         "runtime_sec": float(runtime),
         "trace_f": trace_f,
         "trace_gnorm": trace_gnorm,
+        "timed_out": bool(getattr(res, "timed_out", False)),
     }
     out["settings"] = dict(
         inner_max_iter=inner_max_iter,
@@ -2717,31 +2779,6 @@ BOUNDS = [
     (np.log(1e-4), np.log(5.0)),   # logOM_KE0
 ]
 
-# METHODS = ["FULL_IMPLICIT", "FULL_UNROLL", "STOP", "FD"]
-# METHODS = ["FULL_IMPLICIT", "FULL_UNROLL", "STOP"]
-
-#results = []
-
-if False:
-    # smoke test: STOP objective should evaluate & backprop once without crashing
-    x = torch.tensor(x0, dtype=torch.float64, requires_grad=True)
-    tmp_cache = {}
-    L = focei_objective_stop(
-        subjects, x,
-        eta_cache=tmp_cache,
-        inner_max_iter=inner_max_iter,
-        inner_tol=inner_tol,
-        inner_damping=inner_damping,
-        logdet_jitter=logdet_jitter,
-        floor_rel=floor_rel,
-        floor_abs=floor_abs,
-        max_step_norm=max_step_norm,
-    )
-    L.backward()
-    print("STOP L:", float(L.detach().cpu().item()))
-    print("||grad||:", float(torch.linalg.norm(x.grad).detach().cpu().item()))
-
-
 x_by_method = {}
 
 
@@ -2781,6 +2818,7 @@ for m in METHODS:
             gtol = gtol,
             ftol = ftol,
             maxls = maxls,
+            max_runtime_sec = MAX_METHOD_RUNTIME_SEC,
         )
     else:
         res, out = run_optimization_notebook(
@@ -2813,10 +2851,11 @@ for m in METHODS:
             gtol = gtol_STOP,
             ftol = ftol_STOP,
             maxls = maxls_STOP,
+            max_runtime_sec = MAX_METHOD_RUNTIME_SEC,
         )
     results[m] = out
 
-    print(f"Done {m}: success={out['success']}  niter={out['niter']}  nfev={out['nfev']}  runtime={out['runtime_sec']:.1f}s  final_f={out['final_f']:.3f}")
+    print(f"Done {m}: success={out['success']}  timed_out={out.get('timed_out', False)}  niter={out['niter']}  nfev={out['nfev']}  runtime={out['runtime_sec']:.1f}s  final_f={out['final_f']:.3f}")
 print(f"  message: {out['message']}")
 
 # %% [code] cell 13
@@ -2830,7 +2869,7 @@ print("==============================\n")
 
 for m in unique_methods:
     out = results[m]
-    print(f"{m}: success={out['success']}  niter={out['niter']}  nfev={out['nfev']}  runtime={out['runtime_sec']:.1f}s  final_f={out['final_f']:.3f}")
+    print(f"{m}: success={out['success']}  timed_out={out.get('timed_out', False)}  niter={out['niter']}  nfev={out['nfev']}  runtime={out['runtime_sec']:.1f}s  final_f={out['final_f']:.3f}")
     print(f"  message: {out['message']}")
 
 # %% [code] cell 14
@@ -2987,9 +3026,6 @@ def stop_eval_at_x(x_np: Any, max_subjects: Optional[int] = None,
         floor_abs=floor_abs,
         max_step_norm=max_step_norm,
     ))
-
-#res_df_single["stop_eval(=2*L)"] = res_df_single["x_opt"].apply(lambda x: stop_eval_at_x(x, max_subjects=None, inner_max_iter=INNER_MAX_ITER, inner_tol=INNER_TOL, inner_damping=INNER_DAMPING, logdet_jitter=LOGDET_JITTER, floor_rel=ETA_SOLVE_FLOOR_REL, floor_abs=ETA_SOLVE_FLOOR_ABS, max_step_norm=ETA_MAX_STEP_NORM))
-#display(res_df_single[["method","final_f","stop_eval(=2*L)","runtime_sec"]].sort_values("stop_eval(=2*L)", na_position="last"))
 
 if __name__ == "__main__":
     tables_dir = Path("tables")

@@ -6,6 +6,7 @@ from pathlib import Path
 
 import matplotlib
 matplotlib.use("Agg")
+from scipy.optimize import OptimizeResult
 
 
 def display(obj):
@@ -27,15 +28,29 @@ def _configure_output_dir() -> Path:
         default=".",
         help="Directory where figures and tables will be written.",
     )
+    parser.add_argument(
+        "--max-method-hours",
+        type=float,
+        default=None,
+        help="Optional wall-time limit per method. If reached, the script returns the best point seen so far for that method.",
+    )
     args = parser.parse_args()
     output_dir = Path(args.output_dir).resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
     os.chdir(output_dir)
     print(f"Output directory: {output_dir}")
+    global MAX_METHOD_RUNTIME_SEC
+    MAX_METHOD_RUNTIME_SEC = None if args.max_method_hours is None else max(float(args.max_method_hours), 0.0) * 3600.0
+    if MAX_METHOD_RUNTIME_SEC is not None:
+        print(f"Per-method wall-time limit: {args.max_method_hours:.3f} hours")
     return output_dir
 
 
 OUTPUT_DIR = _configure_output_dir()
+
+
+class MethodTimeLimitReached(RuntimeError):
+    pass
 # %% [markdown] cell 1
 # # Single-start FOCEI comparison for the absorption/elimination-ambiguity example
 # 
@@ -622,21 +637,6 @@ def grad_hess_3x3_torch(scalar: torch.Tensor, vec: torch.Tensor, create_graph_he
     if not create_graph_hess:
         return g.detach(), H.detach()
     return g, H
-
-# ----------------------------
-# Safe logdet for PD matrices
-# ----------------------------
-
-#def safe_logdet_pd_torch(H: torch.Tensor, jitter0: float = 1e-8, max_tries: int = 8):
-#    eye = torch.eye(H.shape[0], device=H.device, dtype=H.dtype)
-#    jitter = jitter0
-#    for _ in range(max_tries):
-#        Hj = H + jitter * eye
-#        sign, ld = torch.linalg.slogdet(Hj)
-#        if torch.isfinite(ld) and float(sign.detach().cpu()) > 0:
-#            return ld, True
-#        jitter *= 10.0
-#    return torch.as_tensor(float("inf"), device=H.device, dtype=H.dtype), False
 
 def safe_logdet_pd_np(H: np.ndarray, jitter0: float = 1e-8, max_tries: int = 8):
     H = np.asarray(H, dtype=float)
@@ -1391,17 +1391,9 @@ def theta_to_record(theta_np: np.ndarray) -> dict:
         sigma=float(p["sigma"]),
     )
 
-# Method labels for plots/tables
-#METHODS = ["AD-full-implicit", "FD", "AD-stop", "AD-full"]
-#METHOD_LABEL = {"AD-full-implicit": "FOCEI-AD-full-implicit", "FD": "FOCEI-FD", "AD-stop": "FOCEI-AD-stop", "AD-full": "FOCEI-AD-full"}
-
 # ----------------------------
 # AD fun+jac (STOP/FULL)
 # ----------------------------
-
-
-
-
 def make_funjac_ad(mode: str, maxiter_eta: int = 6):
     eta_cache = np.zeros((Y_NP.shape[0], 3), dtype=float)
 
@@ -1775,6 +1767,7 @@ def run_focei(
     ftol: float = 1e-9,
     gtol: float = 1e-7,
     maxls: int = 20,
+    max_runtime_sec: float | None = None,
 ):
     method = str(method)
 
@@ -1803,19 +1796,61 @@ def run_focei(
         raise ValueError(f"Unknown method: {method}")
 
     t0 = time.perf_counter()
-    res = minimize(
-        fun=funjac,                    # returns (f,g)
-        x0=np.asarray(theta0, float),
-        jac=True,
-        method="L-BFGS-B",
-        bounds=bounds,
-        callback=cb,
-        options={"maxiter": int(maxiter_outer),
-                     "ftol": ftol,  # disable f-based stopping (we have a custom penalty handling)
-                     "gtol": gtol, 
-                     "maxls": maxls, # Maximum number of line search steps per iteration. The default is 20. 
-                     },
-    )
+    deadline = None if max_runtime_sec is None else (t0 + float(max_runtime_sec))
+    best_x = np.asarray(theta0, float).copy()
+    best_f = float("inf")
+    eval_count = 0
+
+    def _check_time_limit():
+        if deadline is not None and time.perf_counter() >= deadline:
+            raise MethodTimeLimitReached(
+                f"Stopped after reaching the {max_runtime_sec / 3600.0:.3f}-hour wall-time limit."
+            )
+
+    def timed_funjac(theta):
+        nonlocal best_x, best_f, eval_count
+        _check_time_limit()
+        f, g = funjac(theta)
+        eval_count += 1
+        if np.isfinite(f) and f < best_f:
+            best_f = float(f)
+            best_x = np.asarray(theta, dtype=float).copy()
+        _check_time_limit()
+        return f, g
+
+    def timed_cb(theta_xk):
+        _check_time_limit()
+        cb(theta_xk)
+        _check_time_limit()
+
+    try:
+        res = minimize(
+            fun=timed_funjac,              # returns (f,g)
+            x0=np.asarray(theta0, float),
+            jac=True,
+            method="L-BFGS-B",
+            bounds=bounds,
+            callback=timed_cb,
+            options={"maxiter": int(maxiter_outer),
+                         "ftol": ftol,  # disable f-based stopping (we have a custom penalty handling)
+                         "gtol": gtol, 
+                         "maxls": maxls, # Maximum number of line search steps per iteration. The default is 20. 
+                         },
+        )
+    except MethodTimeLimitReached as exc:
+        x_timeout = best_x.copy()
+        fun_timeout = best_f if np.isfinite(best_f) else float("nan")
+        res = OptimizeResult(
+            x=x_timeout,
+            fun=fun_timeout,
+            success=False,
+            status=1,
+            message=str(exc),
+            nit=max(eval_count - 1, 0),
+            nfev=eval_count,
+            njev=eval_count,
+            timed_out=True,
+        )
     dt = time.perf_counter() - t0
     return res, dt
 
@@ -1825,72 +1860,6 @@ def run_focei(
 # ## 4) Single-fit comparison (one initialization)
 # 
 # We compare runtime and final objective for the four FOCEI variants starting from a perturbed initial point near True1.
-
-# %% [code] cell 12
-
-if False:
-    # ============================================================
-    # 4) FULL-IMPLICIT debug run (single start)
-    # ============================================================
-
-    # Debug: run ONLY FULL_IMPLICIT for now
-    METHODS = ["FULL_IMPLICIT"]
-    print("Running METHODS =", METHODS)
-
-    # Initial point near True1 but perturbed
-    theta0 = clip_to_bounds(theta_true1 + rng.normal(0.0, 0.2, size=theta_true1.shape), BOUNDS)
-    print("theta0 =", theta0)
-    print("Init params (ka, CL, V):", np.exp(theta0[:3]))
-
-    # Outer iteration budget (adjust as needed)
-    MAXITER_SINGLE_AD = 100
-
-    # Inner eta-mode Newton steps (adjust as needed)
-    MAXITER_ETA_AD = 25
-
-    # ------------------------------------------------------------------
-    # Sanity check: evaluate FULL_IMPLICIT objective/grad at theta0
-    # ------------------------------------------------------------------
-    try:
-        _full_impl_eval_counter = 0  # reset for cleaner debug headers
-    except NameError:
-        pass
-
-    print("\nSanity check: FULL_IMPLICIT objective/grad at theta0 (verbose prints for first subjects)")
-    eta_tmp = np.zeros((N_SUBJ, 3), dtype=float)
-    f0, g0 = focei_objective_full_implicit_eval(
-        theta0,
-        eta_cache=eta_tmp,
-        update_cache=False,
-        maxiter_eta=MAXITER_ETA_AD,
-        tol_eta=1e-8,
-        damping_eta=1.0,
-        logdet_jitter=1e-8,
-        max_step_norm=10.0,
-    )
-    print(f"[theta0] f={f0:.6g}  ||g||={np.linalg.norm(g0):.6g}  g={g0}")
-
-    # ------------------------------------------------------------------
-    # Run SciPy minimize for FULL_IMPLICIT (watch per-eval debug prints)
-    # ------------------------------------------------------------------
-    print("\nNow running SciPy minimize for FULL_IMPLICIT...")
-    res, dt = run_focei(
-        "FULL_IMPLICIT",
-        theta0,
-        bounds=BOUNDS,
-        maxiter_outer=MAXITER_SINGLE_AD,
-        maxiter_eta=MAXITER_ETA_AD,
-        #logdet_jitter=1e-8,
-    )
-
-    print("\n========== FULL_IMPLICIT result ==========")
-    print("success:", res.success)
-    print("message:", res.message)
-    print("nit:", res.nit, "nfev:", res.nfev)
-    print("f_hat:", res.fun)
-    print("theta_hat:", np.array(res.x, dtype=float))
-    print("params_hat (ka, CL, V):", np.exp(np.array(res.x, dtype=float)[:3]))
-    print("wall_time_sec:", dt)
 
 # %% [code] cell 13
 # ============================================================
@@ -1924,6 +1893,7 @@ if RUN_SINGLE:
                 ftol = FTOL,
                 gtol = GTOL,
                 maxls = MAXLS,
+                max_runtime_sec=MAX_METHOD_RUNTIME_SEC,
             )
         except Exception as e:
             print(f"\nFAILED method={m}: {type(e).__name__}: {e}")
@@ -1934,6 +1904,7 @@ if RUN_SINGLE:
             method=m,
             method_label=METHOD_LABEL[m],
             success=bool(res.success),
+            timed_out=bool(getattr(res, "timed_out", False)),
             status=int(getattr(res, "status", -999)),
             message=str(getattr(res, "message", "")),
             objective=float(res.fun),

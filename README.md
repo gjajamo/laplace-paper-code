@@ -55,6 +55,14 @@ Expected outputs include:
 
 The Warfarin script uses the bundled `data/warfarin_dat.csv`. If that file is missing, the script falls back to the original notebook behavior and attempts to locate or download the dataset.
 
+For long validation runs, both scripts also support:
+
+```bash
+--max-method-hours 5
+```
+
+This applies an optional wall-time limit to each method and returns the best point seen so far if the limit is reached.
+
 ## Notes
 
 - These scripts are intended for manuscript reproducibility and are deliberately narrower than the full project code.
