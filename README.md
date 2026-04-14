@@ -65,11 +65,7 @@ This applies an optional wall-time limit to each method and returns the best poi
 
 ## Notes
 
-- These scripts are intended for manuscript reproducibility and are deliberately narrower than the full project code.
+- These scripts are intended for manuscript reproducibility.
 - The FlipFlop script simulates its own dataset and does not require external inputs.
 - The Warfarin script can still take substantial time, especially for the finite-difference method.
-- Matplotlib is configured with the non-interactive `Agg` backend so the scripts can run in headless environments.
 
-## Suggested Repository Layout
-
-If you publish this folder as a standalone repository, the manuscript can point directly to the repository root and, ideally, to a Zenodo DOI for a tagged release.
