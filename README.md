@@ -5,7 +5,7 @@ This folder contains two standalone Python scripts used to reproduce the single-
 - `flipflop_single_start.py`
 - `warfarin_single_start.py`
 
-The scripts are trimmed from the full manuscript analysis code so they run only the single-start comparisons and write a compact set of figures and tables. They are not intended to reproduce the full multistart analyses or the complete manuscript figure set.
+The scripts run single-start comparisons and write a compact set of figures and tables.
 
 ## Contents
 
