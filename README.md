@@ -13,7 +13,6 @@ The scripts run single-start comparisons and write a compact set of figures and 
 - `warfarin_single_start.py`: single-start joint PK/PD fit for the public Warfarin dataset. It compares FULL-unroll, FULL-implicit, STOP, STOP+FULL, FULL+STOP, and FD.
 - `data/warfarin_dat.csv`: bundled public Warfarin dataset used by the Warfarin script.
 - `requirements.txt`: minimal Python dependencies.
-- `LICENSE`: conservative placeholder license text that should be replaced with the institution-approved public license before release.
 
 ## Recommended Environment
 
