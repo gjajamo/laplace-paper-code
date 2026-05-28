@@ -1,70 +1,66 @@
-# FOCEI Single-Start Examples
+# Laplace FOCEI AD Paper Code
 
-This folder contains two standalone Python scripts used to reproduce the single-start FOCEI comparisons from the manuscript:
+This repository contains the Julia code used for the revised manuscript analyses comparing finite-difference and automatic-differentiation gradients for the Laplace approximation in nonlinear mixed-effects models.
 
-- `flipflop_single_start.py`
-- `warfarin_single_start.py`
+The code includes two examples:
 
-The scripts run single-start comparisons and write a compact set of figures and tables.
+- `flipflop_single_start.jl` and `flipflop_multistart.jl`: one-compartment population PK example with absorption/elimination ambiguity.
+- `warfarin_single_start.jl` and `warfarin_multistart.jl`: public warfarin PK/PD example with the effect-compartment equation solved by fixed-step fourth-order Runge--Kutta integration of the ODE.
+
+The first-submission scripts have been removed from this release. The current code path is Julia-based and uses forward-mode automatic differentiation for the small subject-level random-effect and population-parameter dimensions used in the manuscript.
 
 ## Contents
 
-- `flipflop_single_start.py`: self-contained single-start comparison for the one-compartment subcutaneous absorption model with absorption/elimination ambiguity. It compares FD, STOP, FULL-unroll, and FULL-implicit.
-- `warfarin_single_start.py`: single-start joint PK/PD fit for the public Warfarin dataset. It compares FULL-unroll, FULL-implicit, STOP, STOP+FULL, FULL+STOP, and FD.
-- `data/warfarin_dat.csv`: bundled public Warfarin dataset used by the Warfarin script.
-- `requirements.txt`: minimal Python dependencies.
+- `Project.toml` and `Manifest.toml`: Julia environment used by the computation scripts.
+- `src/flipflop_multistart_methods.jl`: flip-flop model, Laplace objective, and optimization methods.
+- `src/flipflop_sensitivity_equations_core.jl`: sensitivity-equation gradient checks for the flip-flop model.
+- `src/warfarin_model.jl`: warfarin PK/PD model, including the ODE effect-compartment solver.
+- `src/warfarin_multistart_methods.jl`: warfarin Laplace objective and optimization methods.
+- `src/warfarin_sensitivity_equations_core.jl`: sensitivity-equation gradient checks for the warfarin model.
+- `data/warfarin_dat.csv`: public warfarin dataset used by the warfarin scripts.
 
-## Recommended Environment
+## Environment
 
-Python 3.11 was used for development.
-
-Install dependencies with:
-
-```bash
-pip install -r requirements.txt
-```
-
-## How To Run
-
-Both scripts write results to the current directory by default. To keep outputs organized, it is usually easier to give each run its own output folder.
-
-### FlipFlop
+Julia 1.10 was used for the revised analyses. From the repository root, instantiate the environment with:
 
 ```bash
-python flipflop_single_start.py --output-dir outputs/FlipFlopSingleStart
+julia --project=. -e "using Pkg; Pkg.instantiate()"
 ```
 
-Expected outputs include:
+## Single-Start Runs
 
-- `figures/fig_simulated_data_summary.png`
-- `figures/fig_singlefit_runtime_bar_minutes.png`
-- `tables/focei_single_run_comparison.csv`
-- `tables/flipflop_single_start_summary.csv`
-
-### Warfarin
+The single-start wrappers run one matched start for each manuscript method and write CSV outputs under `outputs/`.
 
 ```bash
-python warfarin_single_start.py --output-dir outputs/WarfarinSingleStart
+julia --project=. flipflop_single_start.jl
+julia --project=. warfarin_single_start.jl
 ```
 
-Expected outputs include:
+## Multistart Runs
 
-- `tables/warfarin_single_start_summary.csv`
-- `tables/result_<METHOD>_<FIELD>.csv` files moved into `tables/`
-
-The Warfarin script uses the bundled `data/warfarin_dat.csv`. If that file is missing, the script falls back to the original notebook behavior and attempts to locate or download the dataset.
-
-For long validation runs, both scripts also support:
+The multistart wrappers use the same defaults as the revised manuscript timing comparisons unless overridden by environment variables.
 
 ```bash
---max-method-hours 5
+julia --project=. flipflop_multistart.jl
+julia --project=. warfarin_multistart.jl
 ```
 
-This applies an optional wall-time limit to each method and returns the best point seen so far if the limit is reached.
+Useful controls include:
 
-## Notes
+- `FLIPFLOP_JULIA_N_STARTS` and `WARFARIN_JULIA_N_STARTS`: number of starts.
+- `FLIPFLOP_JULIA_METHODS` and `WARFARIN_JULIA_METHODS`: comma-separated subset of `FULL_IMPLICIT,FULL_UNROLL,STOP,FD`.
+- `FLIPFLOP_JULIA_MAXITER_OUTER` and `WARFARIN_JULIA_MAXITER_OUTER`: maximum outer iterations.
+- `FLIPFLOP_JULIA_MAXITER_ETA` and `WARFARIN_JULIA_MAXITER_ETA`: maximum Newton iterations for subject-specific eta modes.
+- `WARFARIN_JULIA_DT`: maximum RK4 step size in hours for the warfarin effect-compartment ODE. The manuscript uses `0.25`.
+- `FLIPFLOP_JULIA_OUTDIR` and `WARFARIN_JULIA_OUTDIR`: output directories.
 
-- These scripts are intended for manuscript reproducibility.
-- The FlipFlop script simulates its own dataset and does not require external inputs.
-- The Warfarin script can still take substantial time, especially for the finite-difference method.
+## Outputs
 
+Default outputs are CSV files:
+
+- `outputs/FlipFlopSingleStart/flipflop_julia_multistart_methods.csv`
+- `outputs/WarfarinSingleStart/warfarin_julia_multistart_methods.csv`
+- `outputs/FlipFlopMultistart/flipflop_julia_multistart_methods.csv`
+- `outputs/WarfarinMultistart/warfarin_julia_multistart_methods.csv`
+
+The flip-flop script also writes the simulated start bank and NONMEM-style data used for matched comparisons. The warfarin script writes the sampled start bank used in the run.

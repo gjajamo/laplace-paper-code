@@ -1,5 +1,4 @@
-__pycache__/
-*.pyc
 outputs/
 logs/
-.ipynb_checkpoints/
+tables/
+.julia/
