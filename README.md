@@ -1,6 +1,6 @@
 # Laplace FOCEI AD Paper Code
 
-This repository contains the Julia code used for the revised manuscript analyses comparing finite-difference and automatic-differentiation gradients for the Laplace approximation in nonlinear mixed-effects models.
+This repository contains the Julia code used for the manuscript analyses comparing finite-difference and automatic-differentiation gradients for the Laplace approximation in nonlinear mixed-effects models.
 
 The code includes two examples:
 
