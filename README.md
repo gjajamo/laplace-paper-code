@@ -13,10 +13,8 @@ The first-submission scripts have been removed from this release. The current co
 
 - `Project.toml` and `Manifest.toml`: Julia environment used by the computation scripts.
 - `src/flipflop_multistart_methods.jl`: flip-flop model, Laplace objective, and optimization methods.
-- `src/flipflop_sensitivity_equations_core.jl`: sensitivity-equation gradient checks for the flip-flop model.
 - `src/warfarin_model.jl`: warfarin PK/PD model, including the ODE effect-compartment solver.
 - `src/warfarin_multistart_methods.jl`: warfarin Laplace objective and optimization methods.
-- `src/warfarin_sensitivity_equations_core.jl`: sensitivity-equation gradient checks for the warfarin model.
 - `data/warfarin_dat.csv`: public warfarin dataset used by the warfarin scripts.
 
 ## Environment

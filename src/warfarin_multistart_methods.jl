@@ -591,8 +591,6 @@ function fd_value_grad(subjects::Vector{SubjectData}, x::Vector{Float64}, repres
     return f0, g, max_eta_grad, n_conv
 end
 
-include("warfarin_sensitivity_equations_core.jl")
-
 function method_evaluator(method::String, subjects::Vector{SubjectData}, representation::Symbol;
                           dt::Float64=0.25, maxiter_eta::Int=30, full_unroll_steps::Int=30)
     eta_cache = EtaWarmCache()
@@ -608,12 +606,6 @@ function method_evaluator(method::String, subjects::Vector{SubjectData}, represe
     elseif method == "FD"
         return x -> fd_value_grad(subjects, x, representation; dt=dt,
                                   maxiter_eta=maxiter_eta, eta_cache=eta_cache)
-    elseif method in ("SENS", "SENS_FD", "NONMEM_SENS")
-        return x -> sens_fd_value_grad(subjects, x, representation; dt=dt,
-                                       maxiter_eta=maxiter_eta, eta_cache=eta_cache)
-    elseif method in ("SENS_PARAM", "NONMEM_SENS_PARAM", "SENS_ODE")
-        return x -> sens_param_value_grad(subjects, x, representation; dt=dt,
-                                          maxiter_eta=maxiter_eta, eta_cache=eta_cache)
     end
     error("unknown method: $method")
 end

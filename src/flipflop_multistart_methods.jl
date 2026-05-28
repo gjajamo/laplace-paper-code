@@ -809,8 +809,6 @@ function fd_value_grad(subjects::Vector{SubjectData}, theta::Vector{Float64}; ma
     return f0, g, max_eta_grad, n_conv
 end
 
-include("flipflop_sensitivity_equations_core.jl")
-
 function theta_bounds()
     lo = log.([1.0e-3, 0.05, 1.0, 0.01, 0.01, 0.01])
     hi = log.([2.0, 30.0, 300.0, 1.0, 1.0, 5.0])
@@ -872,12 +870,6 @@ function method_evaluator(method::String, subjects::Vector{SubjectData}; maxiter
     elseif method == "FD"
         return theta -> fd_value_grad(subjects, theta; maxiter_eta=maxiter_eta,
                                       eta_solver=eta_solver, eta_cache=eta_cache)
-    elseif method in ("SENS", "SENS_FD", "NONMEM_SENS")
-        eta_solver == :newton || error("SENS_FD currently uses the sensitivity-equation Newton eta solver")
-        return theta -> sens_fd_value_grad(subjects, theta; maxiter_eta=maxiter_eta)
-    elseif method in ("SENS_PARAM", "NONMEM_SENS_PARAM", "SENS_ODE")
-        eta_solver == :newton || error("SENS_PARAM currently uses the sensitivity-equation Newton eta solver")
-        return theta -> sens_param_value_grad(subjects, theta; maxiter_eta=maxiter_eta)
     end
     error("unknown method: $method")
 end
