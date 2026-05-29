@@ -244,8 +244,8 @@ function logdet_cholesky_once(H; jitter::Float64)
     return 2 * sum(log(L[i, i]) for i in 1:q)
 end
 
-function logdet_cholesky_python_floor(H; jitter::Float64=1.0e-8, max_tries::Int=20,
-                                      floor_rel::Float64=1.0e-4, floor_abs::Float64=1.0e-6)
+function logdet_cholesky_relative_floor(H; jitter::Float64=1.0e-8, max_tries::Int=20,
+                                        floor_rel::Float64=1.0e-4, floor_abs::Float64=1.0e-6)
     q = size(H, 1)
     T = eltype(H)
     Hs = Matrix{T}(undef, q, q)
@@ -274,8 +274,8 @@ end
 
 function logdet_cholesky(H; jitter::Float64=1.0e-8, max_tries::Int=20)
     logdet_mode = lowercase(get(ENV, "FLIPFLOP_JULIA_LOGDET_MODE", "raw"))
-    if logdet_mode in ("python", "python_floor", "python-floor")
-        return logdet_cholesky_python_floor(H; jitter=jitter, max_tries=max_tries)
+    if logdet_mode in ("relative", "relative_floor", "relative-floor")
+        return logdet_cholesky_relative_floor(H; jitter=jitter, max_tries=max_tries)
     end
     current = jitter
     for _ in 1:max_tries

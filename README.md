@@ -7,7 +7,7 @@ The code includes two examples:
 - `flipflop_single_start.jl` and `flipflop_multistart.jl`: one-compartment population PK example with absorption/elimination ambiguity.
 - `warfarin_single_start.jl` and `warfarin_multistart.jl`: public warfarin PK/PD example with the effect-compartment equation solved by fixed-step fourth-order Runge--Kutta integration of the ODE.
 
-The first-submission scripts have been removed from this release. The current code path is Julia-based and uses forward-mode automatic differentiation for the small subject-level random-effect and population-parameter dimensions used in the manuscript.
+The implementation is Julia-based and uses forward-mode automatic differentiation for the small subject-level random-effect and population-parameter dimensions used in the manuscript.
 
 ## Contents
 

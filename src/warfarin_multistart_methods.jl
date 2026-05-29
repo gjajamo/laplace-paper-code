@@ -884,7 +884,7 @@ split_tokens(s::String) = [String(strip(x)) for x in split(s, ",") if !isempty(s
 function parse_rep(s::String)
     ss = lowercase(strip(s))
     ss == "ode" && return :ode
-    error("unknown representation: $s; this public release supports ode")
+    error("unknown representation: $s; supported representation is ode")
 end
 
 function main()

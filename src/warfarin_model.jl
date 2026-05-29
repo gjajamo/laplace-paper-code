@@ -132,7 +132,7 @@ function predict_pd(subj::SubjectData, x, eta, representation::Symbol; dt::Float
     emax = sigmoid(x[7])
     dose = typeof(ka + cl + v + e0 + c50 + ke0)(subj.dose_mg)
 
-    representation == :ode || error("unknown representation: $representation; this public release supports ode")
+    representation == :ode || error("unknown representation: $representation; supported representation is ode")
     ce = ce_ode(subj.pd_times, dose, ka, cl, v, ke0; dt_max=dt)
 
     return [e0 * (one(c) - emax * c / (c50 + c + 1.0e-12)) for c in ce]
