@@ -949,7 +949,7 @@ function optimize_one(method::String, subjects::Vector{SubjectData}, theta0::Vec
                                  full_unroll_steps=full_unroll_steps,
                                  eta_solver=eta_solver)
     cache = EvalCache(length(theta0))
-    bound_mode = lowercase(get(ENV, "FLIPFLOP_JULIA_BOUND_MODE", "fminbox"))
+    bound_mode = lowercase(get(ENV, "FLIPFLOP_JULIA_BOUND_MODE", "penalty"))
     function bounds_penalty(x)
         xx = Vector{Float64}(x)
         below = max.(lo .- xx, 0.0)
@@ -1071,8 +1071,8 @@ end
 
 function main()
     n_subj = parse(Int, get(ENV, "FLIPFLOP_JULIA_N_SUBJ", "50"))
-    n_starts = parse(Int, get(ENV, "FLIPFLOP_JULIA_N_STARTS", "10"))
-    maxiter_eta = parse(Int, get(ENV, "FLIPFLOP_JULIA_MAXITER_ETA", "20"))
+    n_starts = parse(Int, get(ENV, "FLIPFLOP_JULIA_N_STARTS", "100"))
+    maxiter_eta = parse(Int, get(ENV, "FLIPFLOP_JULIA_MAXITER_ETA", "50"))
     maxiter_outer = parse(Int, get(ENV, "FLIPFLOP_JULIA_MAXITER_OUTER", "50"))
     full_unroll_steps = parse(Int, get(ENV, "FLIPFLOP_JULIA_FULL_UNROLL_STEPS", string(maxiter_eta)))
     eta_solver = parse_eta_solver()
@@ -1101,6 +1101,7 @@ function main()
     println("methods=", join(methods, ","), " maxiter_eta=", maxiter_eta,
             " full_unroll_steps=", full_unroll_steps, " maxiter_outer=", maxiter_outer)
     println("eta_solver=", eta_solver, " eta_dim=", ETA_DIM)
+    println("bound_mode=", lowercase(get(ENV, "FLIPFLOP_JULIA_BOUND_MODE", "penalty")))
     println("output=", outpath)
     println("starts=", starts_path)
     println("nonmem_data=", nonmem_data_path)

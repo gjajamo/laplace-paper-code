@@ -36,19 +36,25 @@ julia --project=. warfarin_single_start.jl
 
 ## Multistart Runs
 
-The multistart wrappers use the same defaults as the revised manuscript timing comparisons unless overridden by environment variables.
+The multistart wrappers use the same defaults as the revised manuscript timing comparisons unless overridden by environment variables. These are manuscript-scale runs and may take a long time, especially the warfarin FD and FULL-unroll methods.
 
 ```bash
 julia --project=. flipflop_multistart.jl
 julia --project=. warfarin_multistart.jl
 ```
 
+Manuscript defaults:
+
+- Flip-flop: 100 matched starts; `FULL_IMPLICIT,FULL_UNROLL,STOP,FD`; 50 inner eta-mode Newton iterations; 50 outer L-BFGS iterations; smooth penalty handling for outer box constraints.
+- Warfarin: 10 matched starts; ODE representation; `FD,FULL_IMPLICIT,FULL_UNROLL,STOP,STOP+FULL,FULL+STOP`; 50 inner eta-mode Newton iterations; 50 outer L-BFGS iterations; RK4 maximum step size 0.25 h.
+
 Useful controls include:
 
 - `FLIPFLOP_JULIA_N_STARTS` and `WARFARIN_JULIA_N_STARTS`: number of starts.
-- `FLIPFLOP_JULIA_METHODS` and `WARFARIN_JULIA_METHODS`: comma-separated subset of `FULL_IMPLICIT,FULL_UNROLL,STOP,FD`.
+- `FLIPFLOP_JULIA_METHODS` and `WARFARIN_JULIA_METHODS`: comma-separated subset of the supported methods. Warfarin also supports `STOP+FULL` and `FULL+STOP`.
 - `FLIPFLOP_JULIA_MAXITER_OUTER` and `WARFARIN_JULIA_MAXITER_OUTER`: maximum outer iterations.
 - `FLIPFLOP_JULIA_MAXITER_ETA` and `WARFARIN_JULIA_MAXITER_ETA`: maximum Newton iterations for subject-specific eta modes.
+- `FLIPFLOP_JULIA_BOUND_MODE`: outer box-constraint handling for the flip-flop example; the manuscript default is `penalty`.
 - `WARFARIN_JULIA_DT`: maximum RK4 step size in hours for the warfarin effect-compartment ODE. The manuscript uses `0.25`.
 - `FLIPFLOP_JULIA_OUTDIR` and `WARFARIN_JULIA_OUTDIR`: output directories.
 

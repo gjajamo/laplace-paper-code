@@ -893,11 +893,11 @@ function main()
     n_subjects = parse(Int, get(ENV, "WARFARIN_JULIA_N_SUBJ", string(length(subjects_all))))
     subjects = subjects_all[1:min(n_subjects, length(subjects_all))]
     n_starts = parse(Int, get(ENV, "WARFARIN_JULIA_N_STARTS", "10"))
-    maxiter_eta = parse(Int, get(ENV, "WARFARIN_JULIA_MAXITER_ETA", "30"))
+    maxiter_eta = parse(Int, get(ENV, "WARFARIN_JULIA_MAXITER_ETA", "50"))
     maxiter_outer = parse(Int, get(ENV, "WARFARIN_JULIA_MAXITER_OUTER", "50"))
     full_unroll_steps = parse(Int, get(ENV, "WARFARIN_JULIA_FULL_UNROLL_STEPS", string(maxiter_eta)))
     dt = parse(Float64, get(ENV, "WARFARIN_JULIA_DT", "0.25"))
-    methods = split_tokens(get(ENV, "WARFARIN_JULIA_METHODS", "FULL_IMPLICIT,FULL_UNROLL,STOP,FD"))
+    methods = split_tokens(get(ENV, "WARFARIN_JULIA_METHODS", "FD,FULL_IMPLICIT,FULL_UNROLL,STOP,STOP+FULL,FULL+STOP"))
     reps = [parse_rep(x) for x in split_tokens(get(ENV, "WARFARIN_JULIA_REPRESENTATIONS", "ode"))]
     outdir = get(ENV, "WARFARIN_JULIA_OUTDIR", joinpath(@__DIR__, "tables"))
     mkpath(outdir)
