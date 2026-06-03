@@ -1,4 +1,4 @@
-include("warfarin_model.jl")
+include("warfarin_forward_reverse_inner_compare.jl")
 
 using Optim
 using Random
@@ -111,7 +111,7 @@ function unroll_newton_step(H, g; jitter::Float64=1.0e-6, floor_rel::Float64=1.0
     for i in 1:q
         A[i, i] += T(shift)
     end
-    step = A \ T.(g)
+    step = small_spd_solve_ad(A, T.(g))
 
     nrm = sqrt(sum(abs2, primal_vector(step)))
     if !isfinite(nrm)
@@ -121,6 +121,51 @@ function unroll_newton_step(H, g; jitter::Float64=1.0e-6, floor_rel::Float64=1.0
         step = step .* (max_step_norm / (nrm + 1.0e-12))
     end
     return step
+end
+
+function small_spd_solve_ad(A::AbstractMatrix{T}, b::AbstractVector{T}) where {T}
+    q = length(b)
+    L = Matrix{T}(undef, q, q)
+    for i in 1:q, j in 1:q
+        L[i, j] = zero(T)
+    end
+
+    for i in 1:q
+        for j in 1:i
+            s = zero(T)
+            for k in 1:(j - 1)
+                s += L[i, k] * L[j, k]
+            end
+            if i == j
+                v = A[i, i] - s
+                if primal_float(v) <= 0.0 || !isfinite(primal_float(v))
+                    error("non-positive pivot in differentiated SPD solve")
+                end
+                L[i, j] = sqrt(v)
+            else
+                L[i, j] = (A[i, j] - s) / L[j, j]
+            end
+        end
+    end
+
+    y = Vector{T}(undef, q)
+    for i in 1:q
+        s = zero(T)
+        for k in 1:(i - 1)
+            s += L[i, k] * y[k]
+        end
+        y[i] = (b[i] - s) / L[i, i]
+    end
+
+    x = Vector{T}(undef, q)
+    for i in q:-1:1
+        s = zero(T)
+        for k in (i + 1):q
+            s += L[k, i] * x[k]
+        end
+        x[i] = (y[i] - s) / L[i, i]
+    end
+    return x
 end
 
 mutable struct EtaWarmCache
@@ -464,8 +509,9 @@ function eta_newton_unroll(subj::SubjectData, x, eta0::Vector{Float64}, represen
         step_norm = sqrt(sum(abs2, primal_vector(step)))
         step_norm < tol && break
 
-        # Line-search decisions are made on detached/primal values, then the
-        # accepted scalar alpha is applied to the differentiable Newton update.
+        # Match the Python implementation: line-search decisions are made on
+        # detached/primal values, then the accepted scalar alpha is applied to
+        # the differentiable Newton update.
         x_pr = primal_vector(x)
         eta_pr = primal_vector(eta)
         step_pr = primal_vector(step)
@@ -591,6 +637,8 @@ function fd_value_grad(subjects::Vector{SubjectData}, x::Vector{Float64}, repres
     return f0, g, max_eta_grad, n_conv
 end
 
+include("warfarin_sensitivity_equations_core.jl")
+
 function method_evaluator(method::String, subjects::Vector{SubjectData}, representation::Symbol;
                           dt::Float64=0.25, maxiter_eta::Int=30, full_unroll_steps::Int=30)
     eta_cache = EtaWarmCache()
@@ -606,6 +654,12 @@ function method_evaluator(method::String, subjects::Vector{SubjectData}, represe
     elseif method == "FD"
         return x -> fd_value_grad(subjects, x, representation; dt=dt,
                                   maxiter_eta=maxiter_eta, eta_cache=eta_cache)
+    elseif method in ("SENS", "SENS_FD", "NONMEM_SENS")
+        return x -> sens_fd_value_grad(subjects, x, representation; dt=dt,
+                                       maxiter_eta=maxiter_eta, eta_cache=eta_cache)
+    elseif method in ("SENS_PARAM", "NONMEM_SENS_PARAM", "SENS_ODE")
+        return x -> sens_param_value_grad(subjects, x, representation; dt=dt,
+                                          maxiter_eta=maxiter_eta, eta_cache=eta_cache)
     end
     error("unknown method: $method")
 end
@@ -636,6 +690,11 @@ function stage_plan(method::String, maxiter_outer::Int)
 end
 
 is_staged_method(method::String) = stage_plan(method, 50)[2] != ""
+
+function method_env_key(method::String, suffix::String)
+    clean = replace(uppercase(strip(method)), r"[^A-Z0-9]" => "_")
+    return "WARFARIN_JULIA_$(clean)_$(suffix)"
+end
 
 function base_x0()
     return [
@@ -778,7 +837,8 @@ function optimize_one(method::String, subjects::Vector{SubjectData}, representat
     GC.gc()
     wall0 = time_ns()
     cpu0 = process_cpu_seconds()
-    linesearch = lowercase(get(ENV, "WARFARIN_JULIA_LINESEARCH", "hagerzhang"))
+    linesearch = lowercase(get(ENV, method_env_key(method, "LINESEARCH"),
+                               get(ENV, "WARFARIN_JULIA_LINESEARCH", "hagerzhang")))
     method_obj = linesearch == "backtracking" ? LBFGS(linesearch=Optim.LineSearches.BackTracking()) : LBFGS()
     result = try
         optimize(f, g!, theta0, method_obj,
@@ -856,6 +916,42 @@ function optimize_method(method::String, subjects::Vector{SubjectData}, represen
     )
 end
 
+function with_env_value(f::Function, key::String, value::String)
+    had_key = haskey(ENV, key)
+    old_value = had_key ? ENV[key] : ""
+    ENV[key] = value
+    try
+        return f()
+    finally
+        if had_key
+            ENV[key] = old_value
+        else
+            delete!(ENV, key)
+        end
+    end
+end
+
+function account_full_unroll_retry(primary, retry; use_retry::Bool)
+    chosen = use_retry ? retry : primary
+    return (
+        method=chosen.method,
+        theta=chosen.theta,
+        iterations=primary.iterations + retry.iterations,
+        converged=chosen.converged,
+        objective=chosen.objective,
+        wall=primary.wall + retry.wall,
+        cpu=primary.cpu + retry.cpu,
+        evals=primary.evals + retry.evals,
+        max_eta_grad=chosen.max_eta_grad,
+        n_converged=chosen.n_converged,
+        failed=primary.failed || retry.failed,
+        stage1_method="FULL_UNROLL_HAGERZHANG",
+        stage1_outer=primary.iterations,
+        stage2_method=use_retry ? "FULL_UNROLL_BACKTRACKING" : "FULL_UNROLL_BACKTRACKING_REJECTED",
+        stage2_outer=retry.iterations,
+    )
+end
+
 function write_results(path::AbstractString, rows)
     open(path, "w") do io
         header = vcat([
@@ -883,26 +979,31 @@ split_tokens(s::String) = [String(strip(x)) for x in split(s, ",") if !isempty(s
 
 function parse_rep(s::String)
     ss = lowercase(strip(s))
+    ss == "closed_form" && return :closed_form
+    ss == "closed-form" && return :closed_form
     ss == "ode" && return :ode
-    error("unknown representation: $s; supported representation is ode")
+    error("unknown representation: $s")
 end
 
 function main()
-    data_path = get(ENV, "WARFARIN_JULIA_DATA", normpath(joinpath(@__DIR__, "..", "data", "warfarin_dat.csv")))
+    root = normpath(joinpath(@__DIR__, ".."))
+    data_path = get(ENV, "WARFARIN_JULIA_DATA", joinpath(@__DIR__, "warfarin_dat.csv"))
     subjects_all = parse_warfarin_csv(data_path)
     n_subjects = parse(Int, get(ENV, "WARFARIN_JULIA_N_SUBJ", string(length(subjects_all))))
     subjects = subjects_all[1:min(n_subjects, length(subjects_all))]
     n_starts = parse(Int, get(ENV, "WARFARIN_JULIA_N_STARTS", "10"))
-    maxiter_eta = parse(Int, get(ENV, "WARFARIN_JULIA_MAXITER_ETA", "50"))
+    maxiter_eta = parse(Int, get(ENV, "WARFARIN_JULIA_MAXITER_ETA", "30"))
     maxiter_outer = parse(Int, get(ENV, "WARFARIN_JULIA_MAXITER_OUTER", "50"))
     full_unroll_steps = parse(Int, get(ENV, "WARFARIN_JULIA_FULL_UNROLL_STEPS", string(maxiter_eta)))
     dt = parse(Float64, get(ENV, "WARFARIN_JULIA_DT", "0.25"))
-    methods = split_tokens(get(ENV, "WARFARIN_JULIA_METHODS", "FD,FULL_IMPLICIT,FULL_UNROLL,STOP,STOP+FULL,FULL+STOP"))
+    methods = split_tokens(get(ENV, "WARFARIN_JULIA_METHODS", "FULL_IMPLICIT,FULL_UNROLL,STOP,FD"))
     reps = [parse_rep(x) for x in split_tokens(get(ENV, "WARFARIN_JULIA_REPRESENTATIONS", "ode"))]
     outdir = get(ENV, "WARFARIN_JULIA_OUTDIR", joinpath(@__DIR__, "tables"))
     mkpath(outdir)
     outpath = joinpath(outdir, "warfarin_julia_multistart_methods.csv")
     starts_path = joinpath(outdir, "warfarin_julia_start_bank.csv")
+    full_unroll_auto_retry = lowercase(get(ENV, "WARFARIN_JULIA_FULL_UNROLL_AUTO_RETRY", "true")) in ("1", "true", "yes")
+    full_unroll_retry_delta = parse(Float64, get(ENV, "WARFARIN_JULIA_FULL_UNROLL_RETRY_DELTA", "0.5"))
 
     lo, hi = theta_bounds()
     starts = sample_starts(n_starts, base_x0(), lo, hi)
@@ -940,6 +1041,28 @@ function main()
                                           maxiter_outer=maxiter_outer)
                 theta_hat = outcome.theta
                 ad_eval = safe_ad_population_value(subjects, theta_hat, rep; dt=dt, maxiter_eta=maxiter_eta)
+                if full_unroll_auto_retry && canonical_method(method) == "FULL_UNROLL"
+                    current_linesearch = lowercase(get(ENV, method_env_key("FULL_UNROLL", "LINESEARCH"),
+                                                       get(ENV, "WARFARIN_JULIA_LINESEARCH", "hagerzhang")))
+                    mismatch = !isfinite(ad_eval) || !isfinite(outcome.objective) ||
+                               abs(ad_eval - outcome.objective) > full_unroll_retry_delta
+                    if current_linesearch != "backtracking" && mismatch
+                        @printf("  FULL_UNROLL retry: ad_eval-objective mismatch %.6g, trying backtracking\n",
+                                ad_eval - outcome.objective)
+                        retry = with_env_value(method_env_key("FULL_UNROLL", "LINESEARCH"), "backtracking") do
+                            optimize_method(method, subjects, rep, theta0, lo, hi;
+                                            dt=dt, maxiter_eta=maxiter_eta,
+                                            full_unroll_steps=full_unroll_steps,
+                                            maxiter_outer=maxiter_outer)
+                        end
+                        retry_ad_eval = safe_ad_population_value(subjects, retry.theta, rep; dt=dt,
+                                                                 maxiter_eta=maxiter_eta)
+                        use_retry = isfinite(retry_ad_eval) && (!isfinite(ad_eval) || retry_ad_eval < ad_eval)
+                        outcome = account_full_unroll_retry(outcome, retry; use_retry=use_retry)
+                        theta_hat = outcome.theta
+                        ad_eval = use_retry ? retry_ad_eval : ad_eval
+                    end
+                end
                 stop_eval = ad_eval
                 row = (
                     model="warfarin",

@@ -1,21 +1,23 @@
-# Laplace FOCEI AD Paper Code
+# Laplace AD Paper Code
 
-This repository contains the Julia code used for the manuscript analyses comparing finite-difference and automatic-differentiation gradients for the Laplace approximation in nonlinear mixed-effects models.
+This repository contains the Julia code used for the revised manuscript analyses comparing finite-difference and automatic-differentiation gradients for the Laplace approximation of the marginal likelihood in nonlinear mixed-effects models.
 
 The code includes two examples:
 
 - `flipflop_single_start.jl` and `flipflop_multistart.jl`: one-compartment population PK example with absorption/elimination ambiguity.
 - `warfarin_single_start.jl` and `warfarin_multistart.jl`: public warfarin PK/PD example with the effect-compartment equation solved by fixed-step fourth-order Runge--Kutta integration of the ODE.
 
-The implementation is Julia-based and uses forward-mode automatic differentiation for the small subject-level random-effect and population-parameter dimensions used in the manuscript.
+The current code path is Julia-based. The subject-level eta derivatives use forward-mode automatic differentiation, while the population-level methods implement the final manuscript versions of finite differences (FD), FULL-implicit, FULL-unroll, STOP, and the staged Warfarin variants STOP+FULL and FULL+STOP.
 
 ## Contents
 
 - `Project.toml` and `Manifest.toml`: Julia environment used by the computation scripts.
 - `src/flipflop_multistart_methods.jl`: flip-flop model, Laplace objective, and optimization methods.
-- `src/warfarin_model.jl`: warfarin PK/PD model, including the ODE effect-compartment solver.
-- `src/warfarin_multistart_methods.jl`: warfarin Laplace objective and optimization methods.
-- `data/warfarin_dat.csv`: public warfarin dataset used by the warfarin scripts.
+- `src/warfarin_multistart_methods.jl`: Warfarin Laplace objective, ODE effect-compartment solver, and optimization methods.
+- `src/warfarin_subset_methods.jl`: matched-start subset runner used for focused Warfarin checks.
+- `data/flipflop/`: fixed simulated subjects, start bank, true etas, and cached contour slice for the flip-flop example.
+- `data/warfarin/`: public Warfarin data and cached contour slices, including the final high-logit(Emax) slice used for the manuscript figure.
+- `scripts/`: figure-generation scripts for the manuscript contour and runtime panels.
 
 ## Environment
 
@@ -36,26 +38,21 @@ julia --project=. warfarin_single_start.jl
 
 ## Multistart Runs
 
-The multistart wrappers use the same defaults as the revised manuscript timing comparisons unless overridden by environment variables. These are manuscript-scale runs and may take a long time, especially the warfarin FD and FULL-unroll methods.
+The multistart wrappers use the fixed manuscript datasets by default. They are configured for reproducible reruns, but the exact manuscript-scale runs can still take a long time, especially FD and FULL-unroll.
 
 ```bash
 julia --project=. flipflop_multistart.jl
 julia --project=. warfarin_multistart.jl
 ```
 
-Manuscript defaults:
-
-- Flip-flop: 100 matched starts; `FULL_IMPLICIT,FULL_UNROLL,STOP,FD`; 50 inner eta-mode Newton iterations; 50 outer L-BFGS iterations; smooth penalty handling for outer box constraints.
-- Warfarin: 10 matched starts; ODE representation; `FD,FULL_IMPLICIT,FULL_UNROLL,STOP,STOP+FULL,FULL+STOP`; 50 inner eta-mode Newton iterations; 50 outer L-BFGS iterations; RK4 maximum step size 0.25 h.
-
 Useful controls include:
 
 - `FLIPFLOP_JULIA_N_STARTS` and `WARFARIN_JULIA_N_STARTS`: number of starts.
-- `FLIPFLOP_JULIA_METHODS` and `WARFARIN_JULIA_METHODS`: comma-separated subset of the supported methods. Warfarin also supports `STOP+FULL` and `FULL+STOP`.
+- `FLIPFLOP_JULIA_METHODS`: comma-separated subset of `FULL_IMPLICIT,FULL_UNROLL,STOP,FD`.
+- `WARFARIN_JULIA_METHODS`: comma-separated subset of `FULL_IMPLICIT,FULL_UNROLL,STOP,FD,STOP+FULL,FULL+STOP`.
 - `FLIPFLOP_JULIA_MAXITER_OUTER` and `WARFARIN_JULIA_MAXITER_OUTER`: maximum outer iterations.
 - `FLIPFLOP_JULIA_MAXITER_ETA` and `WARFARIN_JULIA_MAXITER_ETA`: maximum Newton iterations for subject-specific eta modes.
-- `FLIPFLOP_JULIA_BOUND_MODE`: outer box-constraint handling for the flip-flop example; the manuscript default is `penalty`.
-- `WARFARIN_JULIA_DT`: maximum RK4 step size in hours for the warfarin effect-compartment ODE. The manuscript uses `0.25`.
+- `WARFARIN_JULIA_DT`: maximum RK4 step size in hours for the Warfarin effect-compartment ODE. The manuscript uses `0.25`.
 - `FLIPFLOP_JULIA_OUTDIR` and `WARFARIN_JULIA_OUTDIR`: output directories.
 
 ## Outputs
@@ -67,4 +64,4 @@ Default outputs are CSV files:
 - `outputs/FlipFlopMultistart/flipflop_julia_multistart_methods.csv`
 - `outputs/WarfarinMultistart/warfarin_julia_multistart_methods.csv`
 
-The flip-flop script also writes the simulated start bank and NONMEM-style data used for matched comparisons. The warfarin script writes the sampled start bank used in the run.
+The flip-flop script also writes the start bank and NONMEM-style data used for matched comparisons. The Warfarin script writes the sampled start bank used in the run. Runtime outputs under `outputs/`, `logs/`, and `tables/` are intentionally ignored by Git.

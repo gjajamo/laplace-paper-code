@@ -87,6 +87,13 @@ function pk_conc_oral_1c(t, dose, ka, cl, v)
     return (dose / v) * ka * diffexp_over_diff(k, ka, t)
 end
 
+function ce_closed_form(t, dose, ka, cl, v, ke0)
+    k = cl / v
+    term1 = diffexp_over_diff(k, ke0, t)
+    term2 = diffexp_over_diff(ka, ke0, t)
+    return dose * ka * ke0 * (term1 - term2) / (v * (ka - k))
+end
+
 function ce_ode(times::Vector{Float64}, dose, ka, cl, v, ke0; dt_max::Float64=0.25)
     ce = zero(ka + cl + v + ke0 + dose)
     current_t = 0.0
@@ -132,8 +139,13 @@ function predict_pd(subj::SubjectData, x, eta, representation::Symbol; dt::Float
     emax = sigmoid(x[7])
     dose = typeof(ka + cl + v + e0 + c50 + ke0)(subj.dose_mg)
 
-    representation == :ode || error("unknown representation: $representation; this public release supports ode")
-    ce = ce_ode(subj.pd_times, dose, ka, cl, v, ke0; dt_max=dt)
+    ce = if representation == :closed_form
+        [ce_closed_form(t, dose, ka, cl, v, ke0) for t in subj.pd_times]
+    elseif representation == :ode
+        ce_ode(subj.pd_times, dose, ka, cl, v, ke0; dt_max=dt)
+    else
+        error("unknown representation: $representation")
+    end
 
     return [e0 * (one(c) - emax * c / (c50 + c + 1.0e-12)) for c in ce]
 end
@@ -284,4 +296,145 @@ function population_laplace(subjects::Vector{SubjectData}, x::Vector{Float64}, b
         total += laplace_subject(subj, x, eta, backend, representation; dt=dt)
     end
     return total, etas, max_grad_norm, n_converged
+end
+
+function timed_seconds(f)
+    GC.gc()
+    t0 = time_ns()
+    value = f()
+    return value, (time_ns() - t0) / 1.0e9
+end
+
+max_eta_absdiff(a, b) = maximum(maximum(abs.(a[i] .- b[i])) for i in eachindex(a))
+
+function write_rows(path::AbstractString, rows)
+    open(path, "w") do io
+        println(io, "representation,backend,n_subjects,maxiter_eta,dt,seconds,ofv,ofv_absdiff,max_eta_absdiff,max_eta_grad_norm,n_converged,agreement_pass")
+        for r in rows
+            @printf(io, "%s,%s,%d,%d,%.12g,%.12g,%.12g,%.12g,%.12g,%.12g,%d,%s\n",
+                    r.representation, r.backend, r.n_subjects, r.maxiter_eta, r.dt, r.seconds,
+                    r.ofv, r.ofv_absdiff, r.max_eta_absdiff, r.max_eta_grad_norm,
+                    r.n_converged, string(r.agreement_pass))
+        end
+    end
+end
+
+function write_summary(path::AbstractString, rows)
+    open(path, "w") do io
+        println(io, "representation,forward_seconds,reverse_seconds,reverse_over_forward_speed_ratio,ofv_absdiff,max_eta_absdiff,forward_max_eta_grad_norm,reverse_max_eta_grad_norm,agreement_pass")
+        for rep in unique([r.representation for r in rows])
+            f = first(r for r in rows if r.representation == rep && r.backend == "ForwardDiff")
+            b = first(r for r in rows if r.representation == rep && r.backend == "ReverseDiff")
+            @printf(io, "%s,%.12g,%.12g,%.12g,%.12g,%.12g,%.12g,%.12g,%s\n",
+                    rep, f.seconds, b.seconds, b.seconds / f.seconds, b.ofv_absdiff,
+                    b.max_eta_absdiff, f.max_eta_grad_norm, b.max_eta_grad_norm,
+                    string(b.agreement_pass))
+        end
+    end
+end
+
+function parse_representations(raw::AbstractString)
+    reps = Symbol[]
+    for item in split(raw, ",")
+        v = lowercase(strip(item))
+        if v in ("closed", "closed_form", "closed-form", "analytic")
+            push!(reps, :closed_form)
+        elseif v in ("ode", "rk4")
+            push!(reps, :ode)
+        else
+            error("unknown representation: $item")
+        end
+    end
+    return reps
+end
+
+function main()
+    data_path = joinpath(@__DIR__, "warfarin_dat.csv")
+    subjects_all = parse_warfarin_csv(data_path)
+    n_subjects = parse(Int, get(ENV, "WARFARIN_JULIA_N_SUBJ", string(length(subjects_all))))
+    subjects = subjects_all[1:min(n_subjects, length(subjects_all))]
+    reps = parse_representations(get(ENV, "WARFARIN_JULIA_REPRESENTATIONS", "closed_form,ode"))
+    maxiter = parse(Int, get(ENV, "WARFARIN_JULIA_MAXITER_ETA", "50"))
+    dt = parse(Float64, get(ENV, "WARFARIN_JULIA_PD_DT", "0.25"))
+    outdir = get(ENV, "WARFARIN_JULIA_OUTDIR", joinpath(@__DIR__, "tables"))
+    mkpath(outdir)
+
+    # Default to the closed-form Warfarin FULL-implicit single-start estimate.
+    # This keeps the eta-mode comparison in a relevant part of parameter space.
+    x0 = [
+        -0.9210127726653524, -1.9722402766094584, 2.016933619247369,
+        4.574268512106518, 0.404725533852134, -3.813983430255588,
+        3.7660967865817736, 0.0551221879421654, 1.8605600006302243,
+        -0.0145730171168364, -1.2286231256669593, -1.29962914164841,
+        -3.727931923757764, -1.2210404901973697, -1.118180862203899,
+    ]
+
+    rows = NamedTuple[]
+    println("Warfarin Julia inner-loop AD comparison")
+    println("subjects=", length(subjects), " maxiter_eta=", maxiter, " dt=", dt)
+
+    for rep in reps
+        println("\nRepresentation: ", rep)
+
+        # Compile both paths before the reported timings.
+        population_laplace(subjects, x0, :forward, rep; dt=dt, maxiter=maxiter)
+        population_laplace(subjects, x0, :reverse, rep; dt=dt, maxiter=maxiter)
+
+        (fwd, sec_fwd) = timed_seconds() do
+            population_laplace(subjects, x0, :forward, rep; dt=dt, maxiter=maxiter)
+        end
+        ofv_fwd, etas_fwd, grad_fwd, conv_fwd = fwd
+        push!(rows, (
+            representation=String(rep),
+            backend="ForwardDiff",
+            n_subjects=length(subjects),
+            maxiter_eta=maxiter,
+            dt=dt,
+            seconds=sec_fwd,
+            ofv=ofv_fwd,
+            ofv_absdiff=0.0,
+            max_eta_absdiff=0.0,
+            max_eta_grad_norm=grad_fwd,
+            n_converged=conv_fwd,
+            agreement_pass=true,
+        ))
+
+        (rev, sec_rev) = timed_seconds() do
+            population_laplace(subjects, x0, :reverse, rep; dt=dt, maxiter=maxiter)
+        end
+        ofv_rev, etas_rev, grad_rev, conv_rev = rev
+        ofv_diff = abs(ofv_rev - ofv_fwd)
+        eta_diff = max_eta_absdiff(etas_fwd, etas_rev)
+        pass = ofv_diff <= 1.0e-7 && eta_diff <= 1.0e-7
+        push!(rows, (
+            representation=String(rep),
+            backend="ReverseDiff",
+            n_subjects=length(subjects),
+            maxiter_eta=maxiter,
+            dt=dt,
+            seconds=sec_rev,
+            ofv=ofv_rev,
+            ofv_absdiff=ofv_diff,
+            max_eta_absdiff=eta_diff,
+            max_eta_grad_norm=grad_rev,
+            n_converged=conv_rev,
+            agreement_pass=pass,
+        ))
+
+        @printf("  ForwardDiff OFV=%14.6f time=%9.4f s max|g_eta|=%.3e converged=%d/%d\n",
+                ofv_fwd, sec_fwd, grad_fwd, conv_fwd, length(subjects))
+        @printf("  ReverseDiff OFV=%14.6f time=%9.4f s ofv_diff=%.3e eta_diff=%.3e max|g_eta|=%.3e pass=%s\n",
+                ofv_rev, sec_rev, ofv_diff, eta_diff, grad_rev, string(pass))
+    end
+
+    detail_path = joinpath(outdir, "warfarin_forward_reverse_inner_compare.csv")
+    summary_path = joinpath(outdir, "warfarin_forward_reverse_inner_summary.csv")
+    write_rows(detail_path, rows)
+    write_summary(summary_path, rows)
+    println("\nWrote: ", detail_path)
+    println("Wrote: ", summary_path)
+end
+
+if abspath(PROGRAM_FILE) == @__FILE__
+    main()
 end

@@ -244,8 +244,8 @@ function logdet_cholesky_once(H; jitter::Float64)
     return 2 * sum(log(L[i, i]) for i in 1:q)
 end
 
-function logdet_cholesky_relative_floor(H; jitter::Float64=1.0e-8, max_tries::Int=20,
-                                        floor_rel::Float64=1.0e-4, floor_abs::Float64=1.0e-6)
+function logdet_cholesky_python_floor(H; jitter::Float64=1.0e-8, max_tries::Int=20,
+                                      floor_rel::Float64=1.0e-4, floor_abs::Float64=1.0e-6)
     q = size(H, 1)
     T = eltype(H)
     Hs = Matrix{T}(undef, q, q)
@@ -274,8 +274,8 @@ end
 
 function logdet_cholesky(H; jitter::Float64=1.0e-8, max_tries::Int=20)
     logdet_mode = lowercase(get(ENV, "FLIPFLOP_JULIA_LOGDET_MODE", "raw"))
-    if logdet_mode in ("relative", "relative_floor", "relative-floor")
-        return logdet_cholesky_relative_floor(H; jitter=jitter, max_tries=max_tries)
+    if logdet_mode in ("python", "python_floor", "python-floor")
+        return logdet_cholesky_python_floor(H; jitter=jitter, max_tries=max_tries)
     end
     current = jitter
     for _ in 1:max_tries
@@ -809,6 +809,8 @@ function fd_value_grad(subjects::Vector{SubjectData}, theta::Vector{Float64}; ma
     return f0, g, max_eta_grad, n_conv
 end
 
+include("flipflop_sensitivity_equations_core.jl")
+
 function theta_bounds()
     lo = log.([1.0e-3, 0.05, 1.0, 0.01, 0.01, 0.01])
     hi = log.([2.0, 30.0, 300.0, 1.0, 1.0, 5.0])
@@ -870,6 +872,12 @@ function method_evaluator(method::String, subjects::Vector{SubjectData}; maxiter
     elseif method == "FD"
         return theta -> fd_value_grad(subjects, theta; maxiter_eta=maxiter_eta,
                                       eta_solver=eta_solver, eta_cache=eta_cache)
+    elseif method in ("SENS", "SENS_FD", "NONMEM_SENS")
+        eta_solver == :newton || error("SENS_FD currently uses the sensitivity-equation Newton eta solver")
+        return theta -> sens_fd_value_grad(subjects, theta; maxiter_eta=maxiter_eta)
+    elseif method in ("SENS_PARAM", "NONMEM_SENS_PARAM", "SENS_ODE")
+        eta_solver == :newton || error("SENS_PARAM currently uses the sensitivity-equation Newton eta solver")
+        return theta -> sens_param_value_grad(subjects, theta; maxiter_eta=maxiter_eta)
     end
     error("unknown method: $method")
 end
@@ -949,7 +957,7 @@ function optimize_one(method::String, subjects::Vector{SubjectData}, theta0::Vec
                                  full_unroll_steps=full_unroll_steps,
                                  eta_solver=eta_solver)
     cache = EvalCache(length(theta0))
-    bound_mode = lowercase(get(ENV, "FLIPFLOP_JULIA_BOUND_MODE", "penalty"))
+    bound_mode = lowercase(get(ENV, "FLIPFLOP_JULIA_BOUND_MODE", "fminbox"))
     function bounds_penalty(x)
         xx = Vector{Float64}(x)
         below = max.(lo .- xx, 0.0)
@@ -1071,8 +1079,8 @@ end
 
 function main()
     n_subj = parse(Int, get(ENV, "FLIPFLOP_JULIA_N_SUBJ", "50"))
-    n_starts = parse(Int, get(ENV, "FLIPFLOP_JULIA_N_STARTS", "100"))
-    maxiter_eta = parse(Int, get(ENV, "FLIPFLOP_JULIA_MAXITER_ETA", "50"))
+    n_starts = parse(Int, get(ENV, "FLIPFLOP_JULIA_N_STARTS", "10"))
+    maxiter_eta = parse(Int, get(ENV, "FLIPFLOP_JULIA_MAXITER_ETA", "20"))
     maxiter_outer = parse(Int, get(ENV, "FLIPFLOP_JULIA_MAXITER_OUTER", "50"))
     full_unroll_steps = parse(Int, get(ENV, "FLIPFLOP_JULIA_FULL_UNROLL_STEPS", string(maxiter_eta)))
     eta_solver = parse_eta_solver()
@@ -1101,7 +1109,6 @@ function main()
     println("methods=", join(methods, ","), " maxiter_eta=", maxiter_eta,
             " full_unroll_steps=", full_unroll_steps, " maxiter_outer=", maxiter_outer)
     println("eta_solver=", eta_solver, " eta_dim=", ETA_DIM)
-    println("bound_mode=", lowercase(get(ENV, "FLIPFLOP_JULIA_BOUND_MODE", "penalty")))
     println("output=", outpath)
     println("starts=", starts_path)
     println("nonmem_data=", nonmem_data_path)
