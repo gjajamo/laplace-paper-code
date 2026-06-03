@@ -5,7 +5,7 @@ This repository contains the Julia code used for the revised manuscript analyses
 The code includes two examples:
 
 - `flipflop_single_start.jl` and `flipflop_multistart.jl`: one-compartment population PK example with absorption/elimination ambiguity.
-- `warfarin_single_start.jl` and `warfarin_multistart.jl`: public warfarin PK/PD example with the effect-compartment equation solved by fixed-step fourth-order Runge--Kutta integration of the ODE.
+- `warfarin_single_start.jl` and `warfarin_multistart.jl`: public warfarin PK/PD example with an ODE effect-compartment representation.
 
 The current code path is Julia-based. The subject-level eta derivatives use forward-mode automatic differentiation, while the population-level methods implement the final manuscript versions of finite differences (FD), FULL-implicit, FULL-unroll, STOP, and the staged Warfarin variants STOP+FULL and FULL+STOP.
 
@@ -52,7 +52,7 @@ Useful controls include:
 - `WARFARIN_JULIA_METHODS`: comma-separated subset of `FULL_IMPLICIT,FULL_UNROLL,STOP,FD,STOP+FULL,FULL+STOP`.
 - `FLIPFLOP_JULIA_MAXITER_OUTER` and `WARFARIN_JULIA_MAXITER_OUTER`: maximum outer iterations.
 - `FLIPFLOP_JULIA_MAXITER_ETA` and `WARFARIN_JULIA_MAXITER_ETA`: maximum Newton iterations for subject-specific eta modes.
-- `WARFARIN_JULIA_DT`: maximum RK4 step size in hours for the Warfarin effect-compartment ODE. The manuscript uses `0.25`.
+- `WARFARIN_JULIA_DT`: internal ODE integration resolution for the Warfarin effect-compartment equation. The manuscript uses `0.25` hours.
 - `FLIPFLOP_JULIA_OUTDIR` and `WARFARIN_JULIA_OUTDIR`: output directories.
 
 ## Outputs
