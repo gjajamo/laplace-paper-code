@@ -55,6 +55,27 @@ Useful controls include:
 - `WARFARIN_JULIA_DT`: internal ODE integration resolution for the Warfarin effect-compartment equation. The manuscript uses `0.25` hours.
 - `FLIPFLOP_JULIA_OUTDIR` and `WARFARIN_JULIA_OUTDIR`: output directories.
 
+## Staged Warfarin Runs
+
+For long manuscript-scale Warfarin reruns, it can be more convenient to run the AD, FD, and staged combo methods into separate output directories and combine them before plotting. The plotting scripts expect one CSV containing all methods.
+
+```bash
+python scripts/combine_method_csvs.py \
+  --output outputs/WarfarinCombined/warfarin_julia_multistart_methods.csv \
+  outputs/WarfarinAD/warfarin_julia_multistart_methods.csv \
+  outputs/WarfarinFD/warfarin_julia_multistart_methods.csv \
+  outputs/WarfarinCombo/warfarin_julia_multistart_methods.csv
+```
+
+The combined CSV can then be passed to the Warfarin figure scripts:
+
+```bash
+python scripts/plot_warfarin_method_contours.py \
+  --results-csv outputs/WarfarinCombined/warfarin_julia_multistart_methods.csv
+python scripts/plot_warfarin_julia_final_manuscript.py \
+  --results-csv outputs/WarfarinCombined/warfarin_julia_multistart_methods.csv
+```
+
 ## Outputs
 
 Default outputs are CSV files:
